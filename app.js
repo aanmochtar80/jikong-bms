@@ -430,15 +430,7 @@ async function connectBle() {
     state.bleWriteChar = writeChar;
     state.bleNotifyChar = notifyChar;
 
-    // Retrieve model number if possible
-    try {
-      const modelChar = await service.getCharacteristic(BLE_MODEL_NBR_UUID);
-      const modelVal = await modelChar.readValue();
-      state.bmsData.device_info.vendor_id = new TextDecoder().decode(modelVal).trim();
-      log(`BMS Model Number: ${state.bmsData.device_info.vendor_id}`, 'success');
-    } catch (e) {
-      log('Model Number UUID not available, skipping.', 'info');
-    }
+
 
     log('Subscribing to notifications...', 'info');
     await state.bleNotifyChar.startNotifications();
