@@ -8,7 +8,8 @@ const state = {
   connected: false,
   connectionType: null, // 'ble' or 'serial'
   device: null, // BluetoothDevice or SerialPort
-  bleChar: null, // BluetoothRemoteGATTCharacteristic
+  bleWriteChar: null, // For sending commands
+  bleNotifyChar: null, // For receiving telemetry notifications
   serialReader: null,
   serialWriter: null,
   serialPollInterval: null,
@@ -350,10 +351,35 @@ async function connectBle() {
     log('GATT Connected. Discovering Primary Service...', 'info');
 
     const service = await server.getPrimaryService(BLE_SERVICE_UUID);
-    log('Service retrieved. Discovering Characteristic...', 'info');
+    log('Service retrieved. Discovering Characteristics...', 'info');
 
-    const characteristic = await service.getCharacteristic(BLE_CHAR_UUID);
-    state.bleChar = characteristic;
+    const characteristics = await service.getCharacteristics();
+    let writeChar = null;
+    let notifyChar = null;
+
+    for (const char of characteristics) {
+      if (char.uuid === BLE_CHAR_UUID) {
+        if (char.properties.write || char.properties.writeWithoutResponse) {
+          writeChar = char;
+        }
+        if (char.properties.notify) {
+          notifyChar = char;
+        }
+      }
+    }
+
+    // Fallback if distinct properties not declared separate by the firmware
+    if (!writeChar && !notifyChar) {
+      const mainChar = await service.getCharacteristic(BLE_CHAR_UUID);
+      writeChar = mainChar;
+      notifyChar = mainChar;
+    } else {
+      if (!writeChar) writeChar = notifyChar;
+      if (!notifyChar) notifyChar = writeChar;
+    }
+
+    state.bleWriteChar = writeChar;
+    state.bleNotifyChar = notifyChar;
 
     // Retrieve model number if possible
     try {
@@ -366,8 +392,8 @@ async function connectBle() {
     }
 
     log('Subscribing to notifications...', 'info');
-    await characteristic.startNotifications();
-    characteristic.addEventListener('characteristicvaluechanged', handleBleNotification);
+    await state.bleNotifyChar.startNotifications();
+    state.bleNotifyChar.addEventListener('characteristicvaluechanged', handleBleNotification);
     
     state.connected = true;
     state.connectionType = 'ble';
@@ -387,7 +413,7 @@ async function connectBle() {
 }
 
 async function requestBleFrame(commandByte) {
-  if (!state.bleChar) return;
+  if (!state.bleWriteChar) return;
   
   const frame = new Uint8Array(20);
   frame[0] = 0xAA;
@@ -406,7 +432,7 @@ async function requestBleFrame(commandByte) {
   frame[19] = sum & 0xFF;
 
   log(`Sending command: 0x${commandByte.toString(16).toUpperCase()}`, 'info');
-  await state.bleChar.writeValueWithoutResponse(frame);
+  await state.bleWriteChar.writeValueWithoutResponse(frame);
 }
 
 function handleBleNotification(event) {
@@ -985,7 +1011,8 @@ function disconnect() {
   state.connected = false;
   state.connectionType = null;
   state.device = null;
-  state.bleChar = null;
+  state.bleWriteChar = null;
+  state.bleNotifyChar = null;
   state.serialReader = null;
   state.serialPollInterval = null;
 
