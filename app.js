@@ -10,6 +10,7 @@ const state = {
   device: null, // BluetoothDevice or SerialPort
   bleWriteChar: null, // For sending commands
   bleNotifyChar: null, // For receiving telemetry notifications
+  blePollInterval: null, // Periodic polling timer
   serialReader: null,
   serialWriter: null,
   serialPollInterval: null,
@@ -446,16 +447,63 @@ async function connectBle() {
     
     state.connected = true;
     state.connectionType = 'ble';
-    log('BLE Connection fully established! Sending initialization requests.', 'success');
+    log('BLE Connection established! Starting continuous polling...', 'success');
 
-    // Send Device Info Request (Command 0x97)
-    await requestBleFrame(0x97);
-    
-    // 500ms delay to allow BMS processing
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // Send Cell Info Request (Command 0x96)
-    await requestBleFrame(0x96);
+    // Start continuous polling loop every 500ms (cycling through known protocols)
+    let pollStep = 0;
+    state.blePollInterval = setInterval(async () => {
+      if (!state.connected || !state.bleWriteChar) {
+        clearInterval(state.blePollInterval);
+        state.blePollInterval = null;
+        return;
+      }
+
+      let frame;
+      const step = pollStep % 11;
+      switch (step) {
+        case 0:
+          frame = buildLegacyReadCommand(0x97);
+          break;
+        case 1:
+          frame = buildLegacyReadCommand(0x96);
+          break;
+        case 2:
+          frame = buildLegacyReadCommand(0x95);
+          break;
+        case 3:
+          frame = buildLegacyL1V1Command(0x95);
+          break;
+        case 4:
+          frame = buildLegacyReverseReadCommand(0x97);
+          break;
+        case 5:
+          frame = buildLegacyReverseReadCommand(0x96);
+          break;
+        case 6:
+          frame = buildLegacyReverseReadCommand(0x95);
+          break;
+        case 7:
+          frame = new Uint8Array([0x55, 0xAA, 0x00, 0xFF, 0x00, 0x00, 0xFE]);
+          break;
+        case 8:
+          frame = new Uint8Array([0x55, 0xAA, 0x01, 0xFF, 0x00, 0x00, 0xFF]);
+          break;
+        case 9:
+          frame = new Uint8Array([0x55, 0xAA, 0x10, 0xFF, 0x00, 0x00, 0x0E]);
+          break;
+        case 10:
+          frame = buildReadCommand();
+          break;
+      }
+
+      try {
+        await state.bleWriteChar.writeValueWithoutResponse(frame);
+      } catch (err) {
+        // fail silently
+      }
+
+      pollStep++;
+    }, 500);
 
     updateUI();
   } catch (error) {
@@ -506,47 +554,78 @@ function handleBleNotification(event) {
   newBuf.set(value, bleBuffer.length);
   bleBuffer = newBuf;
 
-  // Search for the frame start: 0x55, 0xAA, 0xEB, 0x90
-  let startIndex = -1;
-  for (let i = 0; i < bleBuffer.length - 3; i++) {
-    if (bleBuffer[i] === 0x55 && bleBuffer[i+1] === 0xAA && bleBuffer[i+2] === 0xEB && bleBuffer[i+3] === 0x90) {
-      startIndex = i;
-      break;
+  while (bleBuffer.length >= 4) {
+    let headerIndex = -1;
+    let isLegacy = false;
+
+    // Search for frame header 0x4E57 (Modern) or 0x55AAEB90 (Legacy)
+    for (let i = 0; i < bleBuffer.length - 1; i++) {
+      if (bleBuffer[i] === 0x4E && bleBuffer[i + 1] === 0x57) {
+        headerIndex = i;
+        isLegacy = false;
+        break;
+      }
+      if (i < bleBuffer.length - 3 && 
+          bleBuffer[i] === 0x55 && bleBuffer[i + 1] === 0xAA && 
+          bleBuffer[i + 2] === 0xEB && bleBuffer[i + 3] === 0x90) {
+        headerIndex = i;
+        isLegacy = true;
+        break;
+      }
     }
-  }
 
-  if (startIndex === -1) {
-    // Keep last 3 bytes just in case header is split across transmissions
-    if (bleBuffer.length > 3) {
-      bleBuffer = bleBuffer.slice(bleBuffer.length - 3);
+    if (headerIndex === -1) {
+      // Keep last 3 bytes to avoid losing partial headers
+      if (bleBuffer.length > 3) {
+        bleBuffer = bleBuffer.slice(bleBuffer.length - 3);
+      }
+      return;
     }
-    return;
-  }
 
-  // Discard any data before the header
-  if (startIndex > 0) {
-    bleBuffer = bleBuffer.slice(startIndex);
-  }
-
-  // Standard JK BMS BLE frame is always at least 300 bytes
-  if (bleBuffer.length >= 300) {
-    // Extract the full frame
-    const frame = bleBuffer.slice(0, 300);
-    // Slice off processed frame from global buffer
-    bleBuffer = bleBuffer.slice(300);
-
-    // Verify CRC (sum8 over first 299 bytes)
-    let sum = 0;
-    for (let i = 0; i < 299; i++) {
-      sum += frame[i];
+    // Discard preceding garbage
+    if (headerIndex > 0) {
+      bleBuffer = bleBuffer.slice(headerIndex);
     }
-    const calculatedCrc = sum & 0xFF;
-    const receivedCrc = frame[299];
 
-    if (calculatedCrc === receivedCrc) {
-      decodeBleFrame(frame);
+    if (isLegacy) {
+      if (bleBuffer.length < 300) return; // Wait for full 300-byte legacy frame
+      const frame = bleBuffer.slice(0, 300);
+      bleBuffer = bleBuffer.slice(300);
+
+      // Verify CRC (sum8)
+      let sum = 0;
+      for (let i = 0; i < 299; i++) {
+        sum += frame[i];
+      }
+      if ((sum & 0xFF) === frame[299]) {
+        decodeBleFrame(frame);
+      } else {
+        log('Legacy BLE Checksum failed', 'warning');
+      }
     } else {
-      log(`BLE Packet dropped: CRC check failed. Calculated: 0x${calculatedCrc.toString(16)}, Received: 0x${receivedCrc.toString(16)}`, 'warning');
+      if (bleBuffer.length < 4) return;
+      const frameLen = (bleBuffer[2] << 8) | bleBuffer[3];
+      const totalFrameSize = frameLen + 2; // NW header is 2 bytes, total frame is frameLen + 2
+      
+      if (bleBuffer.length < totalFrameSize) return; // Wait for full modern frame
+      const frame = bleBuffer.slice(0, totalFrameSize);
+      bleBuffer = bleBuffer.slice(totalFrameSize);
+
+      // Verify Checksum (4-byte sum at the end)
+      const last = totalFrameSize - 1;
+      const receivedChecksum = (frame[last-3] << 24) | (frame[last-2] << 16) | (frame[last-1] << 8) | frame[last];
+      let calculatedSum = 0;
+      for (let i = 0; i < totalFrameSize - 4; i++) {
+        calculatedSum += frame[i];
+      }
+
+      if (calculatedSum === receivedChecksum) {
+        // Extract TLV data block (starts at index 11)
+        const tlvData = frame.slice(11, totalFrameSize - 4);
+        decodeSerialTLV(tlvData);
+      } else {
+        log('Modern BLE Checksum failed', 'warning');
+      }
     }
   }
 }
@@ -1070,6 +1149,11 @@ function disconnect() {
     } catch (e) {}
   }
 
+  if (state.blePollInterval) {
+    clearInterval(state.blePollInterval);
+    state.blePollInterval = null;
+  }
+
   state.connected = false;
   state.connectionType = null;
   state.device = null;
@@ -1198,4 +1282,64 @@ function drawChart() {
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+}
+
+// ----------------------------------------------------
+// JIKONG BLE COMMAND FRAME BUILDERS
+// ----------------------------------------------------
+function buildLegacyReadCommand(command) {
+  const frame = new Uint8Array(20);
+  frame[0] = 0xAA;
+  frame[1] = 0x55;
+  frame[2] = 0x90;
+  frame[3] = 0xEB;
+  frame[4] = command;
+  frame[5] = 0x00;
+  let crc = 0;
+  for (let i = 0; i < 19; i++) {
+    crc = (crc + frame[i]) & 0xFF;
+  }
+  frame[19] = crc;
+  return frame;
+}
+
+function buildLegacyReverseReadCommand(command) {
+  const frame = new Uint8Array(20);
+  frame[0] = 0x55;
+  frame[1] = 0xAA;
+  frame[2] = 0xEB;
+  frame[3] = 0x90;
+  frame[4] = command;
+  frame[5] = 0x00;
+  let crc = 0;
+  for (let i = 0; i < 19; i++) {
+    crc = (crc + frame[i]) & 0xFF;
+  }
+  frame[19] = crc;
+  return frame;
+}
+
+function buildLegacyL1V1Command(command) {
+  const frame = new Uint8Array(20);
+  frame[0] = 0xAA;
+  frame[1] = 0x55;
+  frame[2] = 0x90;
+  frame[3] = 0xEB;
+  frame[4] = command;
+  frame[5] = 0x01;
+  frame[6] = 0x01;
+  let crc = 0;
+  for (let i = 0; i < 19; i++) {
+    crc = (crc + frame[i]) & 0xFF;
+  }
+  frame[19] = crc;
+  return frame;
+}
+
+function buildReadCommand() {
+  return new Uint8Array([
+    0x4E, 0x57, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00,
+    0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x68, 0x00, 0x00, 0x01, 0x29
+  ]);
 }
