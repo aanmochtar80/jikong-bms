@@ -473,45 +473,22 @@ async function connectBle() {
         log(`TX Error: ${err.message}`, 'error');
       }
 
-      // Read response data in multiple small reads to assemble the full 300-byte frame
-      // BLE returns ~20 bytes per read, so we need ~15 reads for a full frame
-      for (let readAttempt = 0; readAttempt < 20; readAttempt++) {
-        await new Promise(r => setTimeout(r, 50));
-        
-        let gotData = false;
-        for (const nc of state.bleNotifyChars) {
-          try {
-            const val = await withTimeout(nc.readValue(), 200);
-            if (val && val.byteLength > 0) {
-              const data = new Uint8Array(val.buffer, val.byteOffset, val.byteLength);
-              
-              // Feed into the buffer pipeline
-              const newBuf = new Uint8Array(bleBuffer.length + data.length);
-              newBuf.set(bleBuffer, 0);
-              newBuf.set(data, bleBuffer.length);
-              bleBuffer = newBuf;
-              gotData = true;
-            }
-          } catch (e) {
-            // readValue timed out or not supported
+      // Single readValue() kick after 300ms to prime the notification pipeline
+      await new Promise(r => setTimeout(r, 300));
+      for (const nc of state.bleNotifyChars) {
+        try {
+          const val = await withTimeout(nc.readValue(), 200);
+          if (val && val.byteLength > 0) {
+            const data = new Uint8Array(val.buffer, val.byteOffset, val.byteLength);
+            const newBuf = new Uint8Array(bleBuffer.length + data.length);
+            newBuf.set(bleBuffer, 0);
+            newBuf.set(data, bleBuffer.length);
+            bleBuffer = newBuf;
+            processBuffer();
           }
+        } catch (e) {
+          // readValue not supported or timed out
         }
-
-        // Try to parse after each batch of reads
-        if (gotData) {
-          processBuffer();
-        }
-
-        // If buffer already has a complete frame parsed, stop reading
-        if (bleBuffer.length < 4) {
-          // Buffer was consumed by processBuffer, frame was complete
-          break;
-        }
-      }
-
-      // Log buffer status periodically
-      if (pollStep % 4 === 0) {
-        log(`Buffer: ${bleBuffer.length}B | Poll cycle #${pollStep}`, 'info');
       }
 
       pollStep++;
