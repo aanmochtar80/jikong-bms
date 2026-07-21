@@ -436,7 +436,7 @@ async function requestBleFrame(commandByte) {
 }
 
 function handleBleNotification(event) {
-  const value = new Uint8Array(event.target.value.buffer);
+  const value = new Uint8Array(event.target.value.buffer, event.target.value.byteOffset, event.target.value.byteLength);
   
   // Append new data to the buffer
   const newBuf = new Uint8Array(bleBuffer.length + value.length);
