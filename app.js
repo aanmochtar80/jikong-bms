@@ -94,7 +94,7 @@ let serialBuffer = new Uint8Array(0);
 // Initialize Chart canvas
 let canvas, ctx;
 
-document.addEventListener('DOMContentLoaded', () => {
+function initBmsApp() {
   // Setup Chart canvas
   canvas = document.getElementById('telemetryChart');
   if (canvas) {
@@ -111,7 +111,13 @@ document.addEventListener('DOMContentLoaded', () => {
   log('System initialized. Ready to connect.', 'info');
   updateUI();
   drawChart();
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initBmsApp);
+} else {
+  initBmsApp();
+}
 
 function resizeCanvas() {
   if (canvas) {
