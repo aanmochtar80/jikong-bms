@@ -442,6 +442,10 @@ async function connectBle() {
 
     // Send Device Info Request (Command 0x97)
     await requestBleFrame(0x97);
+    
+    // 500ms delay to allow BMS processing
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
     // Send Cell Info Request (Command 0x96)
     await requestBleFrame(0x96);
 
@@ -473,17 +477,11 @@ async function requestBleFrame(commandByte) {
   frame[19] = sum & 0xFF;
 
   try {
-    log(`Sending 0x${commandByte.toString(16).toUpperCase()} (With Response)...`, 'info');
-    await state.bleWriteChar.writeValueWithResponse(frame);
-    log(`Command 0x${commandByte.toString(16).toUpperCase()} sent successfully.`, 'success');
+    log(`Sending 0x${commandByte.toString(16).toUpperCase()}...`, 'info');
+    await state.bleWriteChar.writeValueWithoutResponse(frame);
+    log(`Command 0x${commandByte.toString(16).toUpperCase()} sent.`, 'success');
   } catch (err) {
-    log(`Write with response failed: ${err.message}. Trying without response...`, 'warning');
-    try {
-      await state.bleWriteChar.writeValueWithoutResponse(frame);
-      log(`Command 0x${commandByte.toString(16).toUpperCase()} sent without response.`, 'success');
-    } catch (err2) {
-      log(`Failed to write command frame: ${err2.message}`, 'error');
-    }
+    log(`Failed to write command 0x${commandByte.toString(16).toUpperCase()}: ${err.message}`, 'error');
   }
 }
 
