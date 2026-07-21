@@ -9,7 +9,7 @@ const state = {
   connectionType: null, // 'ble' or 'serial'
   device: null, // BluetoothDevice or SerialPort
   bleWriteChar: null, // For sending commands
-  bleNotifyChar: null, // For receiving telemetry notifications
+  bleNotifyChars: [], // For receiving telemetry notifications
   blePollInterval: null, // Periodic polling timer
   serialReader: null,
   serialWriter: null,
@@ -392,7 +392,7 @@ async function connectBle() {
     }
 
     let writeChar = null;
-    let notifyChar = null;
+    const notifyChars = [];
 
     for (const char of characteristics) {
       const props = [];
@@ -402,48 +402,47 @@ async function connectBle() {
       if (char.properties.indicate) props.push('indicate');
       log(`Characteristic: ${char.uuid} (Props: ${props.join(', ')})`, 'info');
 
+      const uuid = char.uuid.toLowerCase();
       // FFE1 is for writing commands
-      if (char.uuid.includes('ffe1') || char.uuid.includes('FFE1')) {
+      if (uuid.includes('ffe1')) {
         if (char.properties.write || char.properties.writeWithoutResponse) {
           writeChar = char;
         }
       }
-      // FFE2 is for receiving notifications
-      if (char.uuid.includes('ffe2') || char.uuid.includes('FFE2')) {
-        if (char.properties.notify) {
-          notifyChar = char;
+      // Collect notify channels
+      if (char.properties.notify || char.properties.indicate || uuid.includes('ffe1') || uuid.includes('ffe2') || uuid.includes('ffe3')) {
+        notifyChars.push(char);
+      }
+    }
+
+    if (!writeChar) {
+      log('FFE1 write channel not found in list, trying fallbacks...', 'warning');
+      for (const char of characteristics) {
+        if (char.properties.write || char.properties.writeWithoutResponse) {
+          writeChar = char;
+          break;
         }
       }
     }
 
-    // Fallback if FFE2 not found, try FFE1 for notify too
-    if (!writeChar && !notifyChar) {
-      log('FFE1/FFE2 not found via listing, trying BLE_CHAR_UUID fallback...', 'warning');
-      let mainChar;
-      try {
-        mainChar = await service.getCharacteristic(BLE_CHAR_UUID);
-      } catch (err) {
-        mainChar = await service.getCharacteristic('ffe1');
-      }
-      writeChar = mainChar;
-      notifyChar = mainChar;
-    } else {
-      if (!writeChar) {
-        writeChar = notifyChar;
-      }
-      if (!notifyChar) {
-        // If FFE2 was not found or lacks notify, fall back to FFE1
-        notifyChar = writeChar;
-      }
+    if (!writeChar) {
+      throw new Error('No writable BLE characteristic found.');
     }
 
     state.bleWriteChar = writeChar;
-    state.bleNotifyChar = notifyChar;
+    state.bleNotifyChars = notifyChars;
 
-    log('Subscribing to notifications...', 'info');
-    // Add listener BEFORE starting notifications (Standard Web Bluetooth rule)
-    state.bleNotifyChar.addEventListener('characteristicvaluechanged', handleBleNotification);
-    await state.bleNotifyChar.startNotifications();
+    log(`Subscribing to notifications on ${notifyChars.length} characteristics...`, 'info');
+    for (const char of notifyChars) {
+      try {
+        // Register listener BEFORE starting notifications (Standard Web Bluetooth rule)
+        char.addEventListener('characteristicvaluechanged', handleBleNotification);
+        await char.startNotifications();
+        log(`Subscribed to notifications on: ${char.uuid.slice(-4).toUpperCase()}`, 'success');
+      } catch (err) {
+        log(`Failed to subscribe to ${char.uuid.slice(-4).toUpperCase()}: ${err.message}`, 'warning');
+      }
+    }
     
     state.connected = true;
     state.connectionType = 'ble';
@@ -460,46 +459,60 @@ async function connectBle() {
 
       let frame;
       const step = pollStep % 11;
+      let label = '';
       switch (step) {
         case 0:
           frame = buildLegacyReadCommand(0x97);
+          label = 'Legacy AA55 (0x97)';
           break;
         case 1:
           frame = buildLegacyReadCommand(0x96);
+          label = 'Legacy AA55 (0x96)';
           break;
         case 2:
           frame = buildLegacyReadCommand(0x95);
+          label = 'Legacy AA55 (0x95)';
           break;
         case 3:
           frame = buildLegacyL1V1Command(0x95);
+          label = 'Legacy L1V1 (0x95)';
           break;
         case 4:
           frame = buildLegacyReverseReadCommand(0x97);
+          label = 'Legacy 55AA (0x97)';
           break;
         case 5:
           frame = buildLegacyReverseReadCommand(0x96);
+          label = 'Legacy 55AA (0x96)';
           break;
         case 6:
           frame = buildLegacyReverseReadCommand(0x95);
+          label = 'Legacy 55AA (0x95)';
           break;
         case 7:
           frame = new Uint8Array([0x55, 0xAA, 0x00, 0xFF, 0x00, 0x00, 0xFE]);
+          label = 'RS485 Addr 0';
           break;
         case 8:
           frame = new Uint8Array([0x55, 0xAA, 0x01, 0xFF, 0x00, 0x00, 0xFF]);
+          label = 'RS485 Addr 1';
           break;
         case 9:
           frame = new Uint8Array([0x55, 0xAA, 0x10, 0xFF, 0x00, 0x00, 0x0E]);
+          label = 'RS485 Addr 16';
           break;
         case 10:
           frame = buildReadCommand();
+          label = 'Modern 4E57';
           break;
       }
 
       try {
+        const hexCmd = Array.from(frame).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+        log(`TX [${label}]: ${hexCmd.slice(0, 30)}${hexCmd.length > 30 ? '...' : ''}`, 'info');
         await state.bleWriteChar.writeValueWithoutResponse(frame);
       } catch (err) {
-        // fail silently
+        log(`TX Error: ${err.message}`, 'error');
       }
 
       pollStep++;
@@ -1158,7 +1171,7 @@ function disconnect() {
   state.connectionType = null;
   state.device = null;
   state.bleWriteChar = null;
-  state.bleNotifyChar = null;
+  state.bleNotifyChars = [];
   state.serialReader = null;
   state.serialPollInterval = null;
 
