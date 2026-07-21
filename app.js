@@ -340,10 +340,8 @@ async function connectBle() {
   try {
     const device = await navigator.bluetooth.requestDevice({
       filters: [
-        { services: [BLE_SERVICE_UUID] },
-        { services: [0xffe0] }
-      ],
-      optionalServices: [BLE_SERVICE_UUID, 0xffe0]
+        { services: [BLE_SERVICE_UUID] }
+      ]
     });
 
     log(`Device selected: ${device.name || device.id}. Connecting to GATT Server...`, 'info');
