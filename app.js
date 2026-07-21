@@ -8,7 +8,7 @@ const state = {
   connected: false,
   connectionType: null, // 'ble' or 'serial'
   device: null, // BluetoothDevice or SerialPort
-  bleWriteChars: [], // For sending commands
+  bleWriteChar: null, // For sending commands
   bleNotifyChars: [], // For receiving telemetry notifications
   blePollInterval: null, // Periodic polling timer
   serialReader: null,
@@ -391,7 +391,7 @@ async function connectBle() {
       characteristics = [char];
     }
 
-    const writeChars = [];
+    let writeChar = null;
     const notifyChars = [];
 
     for (const char of characteristics) {
@@ -403,10 +403,10 @@ async function connectBle() {
       log(`Characteristic: ${char.uuid} (Props: ${props.join(', ')})`, 'info');
 
       const uuid = char.uuid.toLowerCase();
-      // Collect write channels
-      if (char.properties.write || char.properties.writeWithoutResponse) {
-        if (uuid.includes('ffe1') || uuid.includes('ffe2') || uuid.includes('ffe3') || uuid.includes('ff10')) {
-          writeChars.push(char);
+      // FFE1 is the correct write channel for Jikong BMS commands
+      if (uuid.includes('ffe1')) {
+        if (char.properties.write || char.properties.writeWithoutResponse) {
+          writeChar = char;
         }
       }
       // Collect notify channels
@@ -415,20 +415,21 @@ async function connectBle() {
       }
     }
 
-    if (writeChars.length === 0) {
-      log('No filtered write channels found, trying fallback...', 'warning');
+    if (!writeChar) {
+      log('FFE1 write channel not found in list, trying fallback...', 'warning');
       for (const char of characteristics) {
         if (char.properties.write || char.properties.writeWithoutResponse) {
-          writeChars.push(char);
+          writeChar = char;
+          break;
         }
       }
     }
 
-    if (writeChars.length === 0) {
+    if (!writeChar) {
       throw new Error('No writable BLE characteristic found.');
     }
 
-    state.bleWriteChars = writeChars;
+    state.bleWriteChar = writeChar;
     state.bleNotifyChars = notifyChars;
 
     log(`Subscribing to notifications on ${notifyChars.length} characteristics...`, 'info');
@@ -447,10 +448,10 @@ async function connectBle() {
     state.connectionType = 'ble';
     log('BLE Connection established! Starting continuous polling...', 'success');
 
-    // Start continuous polling loop every 500ms (cycling through known protocols)
+    // Start continuous polling loop every 1000ms (cycling through known protocols)
     let pollStep = 0;
     state.blePollInterval = setInterval(async () => {
-      if (!state.connected || state.bleWriteChars.length === 0) {
+      if (!state.connected || !state.bleWriteChar) {
         clearInterval(state.blePollInterval);
         state.blePollInterval = null;
         return;
@@ -506,25 +507,24 @@ async function connectBle() {
           break;
       }
 
-      // Write to ALL collected write characteristics (matching VoltRide's write sequence)
-      for (const char of state.bleWriteChars) {
-        try {
-          const hexCmd = Array.from(frame).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-          const shortUuid = char.uuid.slice(-4).toUpperCase();
-          log(`TX [${label}] to ${shortUuid}: ${hexCmd.slice(0, 20)}...`, 'info');
-          
-          if (char.properties.writeWithoutResponse) {
-            await char.writeValueWithoutResponse(frame);
-          } else {
-            await char.writeValueWithResponse(frame);
-          }
-        } catch (err) {
-          log(`TX Error on ${char.uuid.slice(-4).toUpperCase()}: ${err.message}`, 'error');
+      // Write strictly to the designated write characteristic (FFE1)
+      const char = state.bleWriteChar;
+      try {
+        const hexCmd = Array.from(frame).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+        const shortUuid = char.uuid.slice(-4).toUpperCase();
+        log(`TX [${label}] to ${shortUuid}: ${hexCmd.slice(0, 20)}...`, 'info');
+        
+        if (char.properties.writeWithoutResponse) {
+          await withTimeout(char.writeValueWithoutResponse(frame), 300);
+        } else {
+          await withTimeout(char.writeValueWithResponse(frame), 300);
         }
+      } catch (err) {
+        log(`TX Error: ${err.message}`, 'error');
       }
 
       pollStep++;
-    }, 500);
+    }, 1000);
 
     updateUI();
   } catch (error) {
@@ -1178,7 +1178,7 @@ function disconnect() {
   state.connected = false;
   state.connectionType = null;
   state.device = null;
-  state.bleWriteChars = [];
+  state.bleWriteChar = null;
   state.bleNotifyChars = [];
   state.serialReader = null;
   state.serialPollInterval = null;
@@ -1303,6 +1303,19 @@ function drawChart() {
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+}
+
+// ----------------------------------------------------
+// BLE WRITE TIMEOUT WRAPPER
+// ----------------------------------------------------
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Timeout')), ms);
+    promise.then(
+      res => { clearTimeout(timer); resolve(res); },
+      err => { clearTimeout(timer); reject(err); }
+    );
+  });
 }
 
 // ----------------------------------------------------
