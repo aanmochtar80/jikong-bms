@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jikong BMS Telemetry Monitor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header>
+    <div class="header-logo">
+      <div class="logo-icon">
+        <!-- SVG Lightning Bolt Icon -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <path d="M11 21h-1l1-7H7.5c-.83 0-1.28-.68-.88-1.38L13.5 2H15l-1 8h4.5c.61 0 .89.37.52.92L11 21z"/>
+        </svg>
+      </div>
+      <div class="logo-text">
+        <h1>JIKONG BMS</h1>
+        <span>Telemetry Monitor</span>
+      </div>
+    </div>
+    <div class="header-status">
+      <div class="status-indicator">
+        <div id="statusDot" class="status-dot disconnected"></div>
+        <span id="statusText">DISCONNECTED</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Connection Panel -->
+    <section class="connection-panel">
+      <div class="panel-title">Connection Panel:</div>
+      <button id="btnConnectBle" class="btn btn-ble">
+        <svg style="width:16px;height:16px;fill:currentColor" viewBox="0 0 24 24">
+          <path d="M14.88,16.29L13,18.17V14.41M13,9.59L14.88,11.47L13,13.35M19,12L14.5,7.5V11H10V13H14.5V16.5L19,12M7.12,6.5L5.71,5.08L3.19,7.6L4.6,9.02M4.6,14.97L3.19,16.39L5.71,18.91L7.12,17.5M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/>
+        </svg>
+        Bluetooth BLE
+      </button>
+      <button id="btnConnectSerial" class="btn btn-serial">
+        <svg style="width:16px;height:16px;fill:currentColor" viewBox="0 0 24 24">
+          <path d="M21,16V14H19V16H17V14H15V16H13V14H11V16H9V14H7V16H5V14H3V16A2,2 0 0,0 5,18H19A2,2 0 0,0 21,16M19,8H17V10H15V8H13V10H11V8H9V10H7V8H5V10H3V8A2,2 0 0,1 5,6H19A2,2 0 0,1 21,8V10H19M21,12V13H3V12A1,1 0 0,1 4,11H20A1,1 0 0,1 21,12Z"/>
+        </svg>
+        USB Serial (UART)
+      </button>
+      <button id="btnDisconnect" class="btn btn-disconnect" disabled>Disconnect</button>
+    </section>
+
+    <!-- Alarms Summary Banner -->
+    <div id="alarmSummaryBanner" class="alarm-summary-banner"></div>
+
+    <!-- Main Dashboard Grid -->
+    <section class="dashboard-grid">
+      
+      <!-- SoC Progress Circle Card -->
+      <div class="card col-3">
+        <div class="card-title">State of Charge</div>
+        <div class="soc-container">
+          <div class="soc-ring-wrapper">
+            <svg class="soc-ring">
+              <circle class="soc-ring-bg" cx="60" cy="60" r="50"></circle>
+              <circle id="valSoCProgress" class="soc-ring-progress" cx="60" cy="60" r="50"></circle>
+            </svg>
+            <div class="soc-text">
+              <span id="valSoC" class="soc-percent">0</span>
+              <span class="soc-label">SoC (%)</span>
+            </div>
+          </div>
+          <div class="soc-details">
+            <div class="soc-detail-item">
+              <span class="soc-detail-label">Remaining:</span>
+              <span class="soc-detail-value"><span id="valCapacityRemain">0.0</span> <span style="font-size:0.75rem;color:var(--text-secondary)">Ah</span></span>
+            </div>
+            <div class="soc-detail-item">
+              <span class="soc-detail-label">Nominal:</span>
+              <span class="soc-detail-value"><span id="valCapacityNominal">0.0</span> <span style="font-size:0.75rem;color:var(--text-secondary)">Ah</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Electrical Metrics Card -->
+      <div class="card col-3">
+        <div class="card-title">Battery Energy</div>
+        <div class="metric-row">
+          <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); font-weight:600">Total Voltage:</span>
+          <div class="metric-value-container">
+            <span id="valVoltage" class="metric-value glow-cyan">0.00</span>
+            <span class="metric-unit">V</span>
+          </div>
+        </div>
+        <div class="metric-row" style="margin-top:0.75rem">
+          <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); font-weight:600">Current:</span>
+          <div class="metric-value-container">
+            <span id="valCurrent" class="metric-value glow-green">0.00</span>
+            <span class="metric-unit">A</span>
+          </div>
+        </div>
+        <div class="metric-footer">
+          <div>Power: <span id="valPower" style="font-weight:600;color:var(--text-primary)">0.0</span> W</div>
+          <div>Cycles: <span id="valCycles" style="font-weight:600;color:var(--text-primary)">0</span></div>
+        </div>
+      </div>
+
+      <!-- Active Switches Status Card -->
+      <div class="card col-3">
+        <div class="card-title">switch Status</div>
+        <div class="switch-grid">
+          <div id="switchCharge" class="switch-indicator-card">
+            <span class="switch-name">Charging</span>
+            <span class="switch-status-pill">OFF</span>
+          </div>
+          <div id="switchDischarge" class="switch-indicator-card">
+            <span class="switch-name">Discharge</span>
+            <span class="switch-status-pill">OFF</span>
+          </div>
+          <div id="switchBalance" class="switch-indicator-card">
+            <span class="switch-name">Balancer</span>
+            <span class="switch-status-pill">OFF</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Temperature Card -->
+      <div class="card col-3">
+        <div class="card-title">Temperatures</div>
+        <div class="temp-row">
+          <div class="temp-item">
+            <span class="temp-label">MOSFET</span>
+            <span class="temp-value"><span id="valTempMos">0.0</span>°C</span>
+          </div>
+          <div class="temp-item">
+            <span class="temp-label">Temp 1</span>
+            <span class="temp-value"><span id="valTemp1">0.0</span>°C</span>
+          </div>
+          <div class="temp-item">
+            <span class="temp-label">Temp 2</span>
+            <span class="temp-value"><span id="valTemp2">0.0</span>°C</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cell Voltages Grid Panel (span 8) -->
+      <div class="card col-8">
+        <div class="card-title">
+          <span>Cell Voltages</span>
+          <span style="font-size:0.75rem;text-transform:none;color:var(--text-secondary)">Displays individual cell voltage levels</span>
+        </div>
+        <div class="cell-grid-summary">
+          <div class="cell-summary-item">
+            <div class="cell-summary-details">
+              <span class="cell-summary-label">Average Cell:</span>
+              <span class="cell-summary-val"><span id="valAverageCell">0.000</span> <span style="font-size:0.75rem;font-weight:500;color:var(--text-secondary)">V</span></span>
+            </div>
+          </div>
+          <div class="cell-summary-item">
+            <div class="cell-summary-details">
+              <span class="cell-summary-label">Delta (Vdiff):</span>
+              <span class="cell-summary-val" style="color:var(--amber-glow)"><span id="valDeltaCell">0.000</span> <span style="font-size:0.75rem;font-weight:500;color:var(--text-secondary)">V</span></span>
+            </div>
+          </div>
+          <div class="cell-summary-item">
+            <div class="cell-summary-color-box high"></div>
+            <div class="cell-summary-details">
+              <span class="cell-summary-label">Highest (<span id="valMaxCellNum">-</span>):</span>
+              <span class="cell-summary-val" style="color:var(--red-glow)"><span id="valMaxCellVolts">0.000</span> <span style="font-size:0.75rem;font-weight:500;color:var(--text-secondary)">V</span></span>
+            </div>
+          </div>
+          <div class="cell-summary-item">
+            <div class="cell-summary-color-box low"></div>
+            <div class="cell-summary-details">
+              <span class="cell-summary-label">Lowest (<span id="valMinCellNum">-</span>):</span>
+              <span class="cell-summary-val" style="color:var(--cyan-glow)"><span id="valMinCellVolts">0.000</span> <span style="font-size:0.75rem;font-weight:500;color:var(--text-secondary)">V</span></span>
+            </div>
+          </div>
+        </div>
+        <div id="cellsContainer" class="cells-display-container">
+          <!-- Rendered dynamically by app.js -->
+        </div>
+      </div>
+
+      <!-- Realtime Chart Panel (span 4) -->
+      <div class="card col-4">
+        <div class="card-title">Realtime Graph</div>
+        <div class="chart-container">
+          <canvas id="telemetryChart"></canvas>
+        </div>
+        <div style="display:flex;justify-content:center;gap:1.5rem;font-size:0.75rem;margin-top:0.75rem">
+          <span style="color:var(--cyan-glow)">● Voltage (V)</span>
+          <span style="color:var(--green-glow)">● Current (A)</span>
+        </div>
+      </div>
+
+      <!-- Alarms/Alerts List -->
+      <div class="card col-12">
+        <div class="card-title">Active Alarms Dashboard</div>
+        <div class="alarms-grid">
+          <div id="alarmOvp" class="alarm-tag">Cell Overvoltage</div>
+          <div id="alarmUvp" class="alarm-tag">Cell Undervoltage</div>
+          <div id="alarmCoc" class="alarm-tag">Charge Overcurrent</div>
+          <div id="alarmDoc" class="alarm-tag">Discharge Overcurrent</div>
+          <div id="alarmCut" class="alarm-tag">Charge Undertemp</div>
+          <div id="alarmDot" class="alarm-tag">Discharge Overtemp</div>
+          <div id="alarmMos" class="alarm-tag">MOSFET Overtemp</div>
+          <div id="alarmWire" class="alarm-tag">Wire Open Alarm</div>
+          <div id="alarmCellCount" class="alarm-tag">Cell Count Mismatch</div>
+        </div>
+      </div>
+
+      <!-- System Protection Settings -->
+      <div class="card col-8">
+        <div class="card-title">System Settings (BMS Limits)</div>
+        <div class="settings-grid">
+          <div class="settings-list">
+            <div class="settings-item">
+              <span class="settings-label">Cell Overvoltage Limit (OVP):</span>
+              <span class="settings-val"><span id="setOVP">0.000</span> V</span>
+            </div>
+            <div class="settings-item">
+              <span class="settings-label">Cell Undervoltage Limit (UVP):</span>
+              <span class="settings-val"><span id="setUVP">0.000</span> V</span>
+            </div>
+            <div class="settings-item">
+              <span class="settings-label">Total Overvoltage Limit:</span>
+              <span class="settings-val"><span id="setTotalOVP">0.00</span> V</span>
+            </div>
+            <div class="settings-item">
+              <span class="settings-label">Total Undervoltage Limit:</span>
+              <span class="settings-val"><span id="setTotalUVP">0.00</span> V</span>
+            </div>
+            <div class="settings-item">
+              <span class="settings-label">Battery Type:</span>
+              <span id="setBatType" class="settings-val">Unknown</span>
+            </div>
+          </div>
+          <div class="settings-list">
+            <div class="settings-item">
+              <span class="settings-label">Charge Overcurrent Limit (OCP):</span>
+              <span class="settings-val"><span id="setChargeOCP">0.0</span> A</span>
+            </div>
+            <div class="settings-item">
+              <span class="settings-label">Discharge Overcurrent Limit (OCP):</span>
+              <span class="settings-val"><span id="setDischargeOCP">0.0</span> A</span>
+            </div>
+            <div class="settings-item">
+              <span class="settings-label">Balance Start Voltage:</span>
+              <span class="settings-val"><span id="setBalStart">0.000</span> V</span>
+            </div>
+            <div class="settings-item">
+              <span class="settings-label">Balance Opening Delta V:</span>
+              <span class="settings-val"><span id="setBalDelta">0.000</span> V</span>
+            </div>
+            <div class="settings-item">
+              <span class="settings-label">Capacity (Nominal / Actual):</span>
+              <span class="settings-val"><span id="setCapNom">0.0</span>Ah / <span id="setCapAct">0.0</span>Ah</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Device Information -->
+      <div class="card col-4">
+        <div class="card-title">BMS Hardware Specification</div>
+        <div class="settings-list">
+          <div class="settings-item">
+            <span class="settings-label">Manufacturer ID:</span>
+            <span id="infoVendor" class="settings-val">N/A</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Hardware Version:</span>
+            <span id="infoHw" class="settings-val">N/A</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Software Version:</span>
+            <span id="infoSw" class="settings-val">N/A</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Serial Number:</span>
+            <span id="infoSerial" class="settings-val">N/A</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Date of Manufacture:</span>
+            <span id="infoProduction" class="settings-val">N/A</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">System Uptime:</span>
+            <span id="infoUptime" class="settings-val">N/A</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Raw Logs Terminal -->
+    <section class="console-wrapper">
+      <div class="card-title">Live Diagnostics Terminal</div>
+      <div id="consoleTerminal" class="console-terminal"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Jikong BMS Web Monitor. Made for DIY Energy & Solar Systems.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
