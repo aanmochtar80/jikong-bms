@@ -472,13 +472,28 @@ async function requestBleFrame(commandByte) {
   }
   frame[19] = sum & 0xFF;
 
-  log(`Sending command: 0x${commandByte.toString(16).toUpperCase()}`, 'info');
-  await state.bleWriteChar.writeValueWithoutResponse(frame);
+  try {
+    log(`Sending 0x${commandByte.toString(16).toUpperCase()} (With Response)...`, 'info');
+    await state.bleWriteChar.writeValueWithResponse(frame);
+    log(`Command 0x${commandByte.toString(16).toUpperCase()} sent successfully.`, 'success');
+  } catch (err) {
+    log(`Write with response failed: ${err.message}. Trying without response...`, 'warning');
+    try {
+      await state.bleWriteChar.writeValueWithoutResponse(frame);
+      log(`Command 0x${commandByte.toString(16).toUpperCase()} sent without response.`, 'success');
+    } catch (err2) {
+      log(`Failed to write command frame: ${err2.message}`, 'error');
+    }
+  }
 }
 
 function handleBleNotification(event) {
   const value = new Uint8Array(event.target.value.buffer, event.target.value.byteOffset, event.target.value.byteLength);
   
+  // Log incoming bytes for real-time debugging
+  const hex = Array.from(value).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+  log(`RX (${value.length}B): ${hex.slice(0, 40)}${hex.length > 40 ? '...' : ''}`, 'raw');
+
   // Append new data to the buffer
   const newBuf = new Uint8Array(bleBuffer.length + value.length);
   newBuf.set(bleBuffer, 0);
