@@ -338,7 +338,7 @@ async function connectBle() {
 
   try {
     const device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'JK-' }, { namePrefix: 'BMS-' }],
+      acceptAllDevices: true,
       optionalServices: [BLE_SERVICE_UUID]
     });
 
