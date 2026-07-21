@@ -401,19 +401,23 @@ async function connectBle() {
       if (char.properties.indicate) props.push('indicate');
       log(`Characteristic: ${char.uuid} (Props: ${props.join(', ')})`, 'info');
 
+      // FFE1 is for writing commands
       if (char.uuid.includes('ffe1') || char.uuid.includes('FFE1')) {
         if (char.properties.write || char.properties.writeWithoutResponse) {
           writeChar = char;
         }
+      }
+      // FFE2 is for receiving notifications
+      if (char.uuid.includes('ffe2') || char.uuid.includes('FFE2')) {
         if (char.properties.notify) {
           notifyChar = char;
         }
       }
     }
 
-    // Fallback if distinct properties not declared separate by the firmware
+    // Fallback if FFE2 not found, try FFE1 for notify too
     if (!writeChar && !notifyChar) {
-      log('Distinct write/notify characteristics not found, trying BLE_CHAR_UUID fallback...', 'warning');
+      log('FFE1/FFE2 not found via listing, trying BLE_CHAR_UUID fallback...', 'warning');
       let mainChar;
       try {
         mainChar = await service.getCharacteristic(BLE_CHAR_UUID);
@@ -423,18 +427,22 @@ async function connectBle() {
       writeChar = mainChar;
       notifyChar = mainChar;
     } else {
-      if (!writeChar) writeChar = notifyChar;
-      if (!notifyChar) notifyChar = writeChar;
+      if (!writeChar) {
+        writeChar = notifyChar;
+      }
+      if (!notifyChar) {
+        // If FFE2 was not found or lacks notify, fall back to FFE1
+        notifyChar = writeChar;
+      }
     }
 
     state.bleWriteChar = writeChar;
     state.bleNotifyChar = notifyChar;
 
-
-
     log('Subscribing to notifications...', 'info');
-    await state.bleNotifyChar.startNotifications();
+    // Add listener BEFORE starting notifications (Standard Web Bluetooth rule)
     state.bleNotifyChar.addEventListener('characteristicvaluechanged', handleBleNotification);
+    await state.bleNotifyChar.startNotifications();
     
     state.connected = true;
     state.connectionType = 'ble';
