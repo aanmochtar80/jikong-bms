@@ -446,9 +446,9 @@ async function connectBle() {
     
     state.connected = true;
     state.connectionType = 'ble';
-    log('BLE Connection established! Starting continuous polling...', 'success');
+    log('BLE Connection established! Polling with Legacy AA55 protocol...', 'success');
 
-    // Start continuous polling loop every 1000ms (cycling through known protocols)
+    // Only use Legacy AA55 protocol (confirmed working for JK_BD4A24S4P)
     let pollStep = 0;
     state.blePollInterval = setInterval(async () => {
       if (!state.connected || !state.bleWriteChar) {
@@ -457,57 +457,11 @@ async function connectBle() {
         return;
       }
 
-      let frame;
-      const step = pollStep % 11;
-      let label = '';
-      switch (step) {
-        case 0:
-          frame = buildLegacyReadCommand(0x97);
-          label = 'Legacy AA55 (0x97)';
-          break;
-        case 1:
-          frame = buildLegacyReadCommand(0x96);
-          label = 'Legacy AA55 (0x96)';
-          break;
-        case 2:
-          frame = buildLegacyReadCommand(0x95);
-          label = 'Legacy AA55 (0x95)';
-          break;
-        case 3:
-          frame = buildLegacyL1V1Command(0x95);
-          label = 'Legacy L1V1 (0x95)';
-          break;
-        case 4:
-          frame = buildLegacyReverseReadCommand(0x97);
-          label = 'Legacy 55AA (0x97)';
-          break;
-        case 5:
-          frame = buildLegacyReverseReadCommand(0x96);
-          label = 'Legacy 55AA (0x96)';
-          break;
-        case 6:
-          frame = buildLegacyReverseReadCommand(0x95);
-          label = 'Legacy 55AA (0x95)';
-          break;
-        case 7:
-          frame = new Uint8Array([0x55, 0xAA, 0x00, 0xFF, 0x00, 0x00, 0xFE]);
-          label = 'RS485 Addr 0';
-          break;
-        case 8:
-          frame = new Uint8Array([0x55, 0xAA, 0x01, 0xFF, 0x00, 0x00, 0xFF]);
-          label = 'RS485 Addr 1';
-          break;
-        case 9:
-          frame = new Uint8Array([0x55, 0xAA, 0x10, 0xFF, 0x00, 0x00, 0x0E]);
-          label = 'RS485 Addr 16';
-          break;
-        case 10:
-          frame = buildReadCommand();
-          label = 'Modern 4E57';
-          break;
-      }
+      // Alternate between Device Info (0x97) and Cell Info (0x96)
+      const cmd = (pollStep % 2 === 0) ? 0x97 : 0x96;
+      const frame = buildLegacyReadCommand(cmd);
 
-      // Write strictly to the designated write characteristic (FFE1)
+      // Write command to FFE1
       const char = state.bleWriteChar;
       try {
         if (char.properties.writeWithoutResponse) {
@@ -519,31 +473,49 @@ async function connectBle() {
         log(`TX Error: ${err.message}`, 'error');
       }
 
-      // Wait for BMS to prepare response, then try readValue() fallback
-      // (workaround for Bluefy iOS not forwarding BLE notifications)
-      await new Promise(r => setTimeout(r, 200));
-      for (const nc of state.bleNotifyChars) {
-        try {
-          const val = await withTimeout(nc.readValue(), 300);
-          if (val && val.byteLength > 0) {
-            const data = new Uint8Array(val.buffer, val.byteOffset, val.byteLength);
-            const hex = Array.from(data).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-            log(`RX-read (${data.length}B) from ${nc.uuid.slice(-4).toUpperCase()}: ${hex.slice(0, 40)}${hex.length > 40 ? '...' : ''}`, 'success');
-            
-            // Feed into the same buffer pipeline
-            const newBuf = new Uint8Array(bleBuffer.length + data.length);
-            newBuf.set(bleBuffer, 0);
-            newBuf.set(data, bleBuffer.length);
-            bleBuffer = newBuf;
-            processBuffer();
+      // Read response data in multiple small reads to assemble the full 300-byte frame
+      // BLE returns ~20 bytes per read, so we need ~15 reads for a full frame
+      for (let readAttempt = 0; readAttempt < 20; readAttempt++) {
+        await new Promise(r => setTimeout(r, 50));
+        
+        let gotData = false;
+        for (const nc of state.bleNotifyChars) {
+          try {
+            const val = await withTimeout(nc.readValue(), 200);
+            if (val && val.byteLength > 0) {
+              const data = new Uint8Array(val.buffer, val.byteOffset, val.byteLength);
+              
+              // Feed into the buffer pipeline
+              const newBuf = new Uint8Array(bleBuffer.length + data.length);
+              newBuf.set(bleBuffer, 0);
+              newBuf.set(data, bleBuffer.length);
+              bleBuffer = newBuf;
+              gotData = true;
+            }
+          } catch (e) {
+            // readValue timed out or not supported
           }
-        } catch (e) {
-          // readValue not supported or timed out - that's fine
+        }
+
+        // Try to parse after each batch of reads
+        if (gotData) {
+          processBuffer();
+        }
+
+        // If buffer already has a complete frame parsed, stop reading
+        if (bleBuffer.length < 4) {
+          // Buffer was consumed by processBuffer, frame was complete
+          break;
         }
       }
 
+      // Log buffer status periodically
+      if (pollStep % 4 === 0) {
+        log(`Buffer: ${bleBuffer.length}B | Poll cycle #${pollStep}`, 'info');
+      }
+
       pollStep++;
-    }, 1000);
+    }, 2000);
 
     updateUI();
   } catch (error) {
