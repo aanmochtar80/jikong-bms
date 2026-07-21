@@ -510,10 +510,6 @@ async function connectBle() {
       // Write strictly to the designated write characteristic (FFE1)
       const char = state.bleWriteChar;
       try {
-        const hexCmd = Array.from(frame).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-        const shortUuid = char.uuid.slice(-4).toUpperCase();
-        log(`TX [${label}] to ${shortUuid}: ${hexCmd.slice(0, 20)}...`, 'info');
-        
         if (char.properties.writeWithoutResponse) {
           await withTimeout(char.writeValueWithoutResponse(frame), 300);
         } else {
@@ -521,6 +517,29 @@ async function connectBle() {
         }
       } catch (err) {
         log(`TX Error: ${err.message}`, 'error');
+      }
+
+      // Wait for BMS to prepare response, then try readValue() fallback
+      // (workaround for Bluefy iOS not forwarding BLE notifications)
+      await new Promise(r => setTimeout(r, 200));
+      for (const nc of state.bleNotifyChars) {
+        try {
+          const val = await withTimeout(nc.readValue(), 300);
+          if (val && val.byteLength > 0) {
+            const data = new Uint8Array(val.buffer, val.byteOffset, val.byteLength);
+            const hex = Array.from(data).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+            log(`RX-read (${data.length}B) from ${nc.uuid.slice(-4).toUpperCase()}: ${hex.slice(0, 40)}${hex.length > 40 ? '...' : ''}`, 'success');
+            
+            // Feed into the same buffer pipeline
+            const newBuf = new Uint8Array(bleBuffer.length + data.length);
+            newBuf.set(bleBuffer, 0);
+            newBuf.set(data, bleBuffer.length);
+            bleBuffer = newBuf;
+            processBuffer();
+          }
+        } catch (e) {
+          // readValue not supported or timed out - that's fine
+        }
       }
 
       pollStep++;
@@ -563,18 +582,26 @@ async function requestBleFrame(commandByte) {
 }
 
 function handleBleNotification(event) {
-  const value = new Uint8Array(event.target.value.buffer, event.target.value.byteOffset, event.target.value.byteLength);
-  
-  // Log incoming bytes for real-time debugging
-  const hex = Array.from(value).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-  log(`RX (${value.length}B): ${hex.slice(0, 40)}${hex.length > 40 ? '...' : ''}`, 'raw');
+  try {
+    const value = new Uint8Array(event.target.value.buffer, event.target.value.byteOffset, event.target.value.byteLength);
+    
+    // Log incoming bytes for real-time debugging
+    const hex = Array.from(value).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+    log(`RX-notify (${value.length}B): ${hex.slice(0, 40)}${hex.length > 40 ? '...' : ''}`, 'success');
 
-  // Append new data to the buffer
-  const newBuf = new Uint8Array(bleBuffer.length + value.length);
-  newBuf.set(bleBuffer, 0);
-  newBuf.set(value, bleBuffer.length);
-  bleBuffer = newBuf;
+    // Append new data to the buffer
+    const newBuf = new Uint8Array(bleBuffer.length + value.length);
+    newBuf.set(bleBuffer, 0);
+    newBuf.set(value, bleBuffer.length);
+    bleBuffer = newBuf;
 
+    processBuffer();
+  } catch (err) {
+    log(`Notification handler error: ${err.message}`, 'error');
+  }
+}
+
+function processBuffer() {
   while (bleBuffer.length >= 4) {
     let headerIndex = -1;
     let isLegacy = false;
@@ -619,6 +646,7 @@ function handleBleNotification(event) {
         sum += frame[i];
       }
       if ((sum & 0xFF) === frame[299]) {
+        log('Legacy frame received and CRC passed!', 'success');
         decodeBleFrame(frame);
       } else {
         log('Legacy BLE Checksum failed', 'warning');
@@ -641,6 +669,7 @@ function handleBleNotification(event) {
       }
 
       if (calculatedSum === receivedChecksum) {
+        log('Modern frame received and checksum passed!', 'success');
         // Extract TLV data block (starts at index 11)
         const tlvData = frame.slice(11, totalFrameSize - 4);
         decodeSerialTLV(tlvData);
