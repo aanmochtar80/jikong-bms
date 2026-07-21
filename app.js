@@ -346,7 +346,8 @@ async function connectBle() {
   try {
     const device = await navigator.bluetooth.requestDevice({
       filters: [
-        { services: [BLE_SERVICE_UUID] }
+        { services: [BLE_SERVICE_UUID] },
+        { services: ['ffe0'] }
       ]
     });
 
@@ -357,15 +358,50 @@ async function connectBle() {
     const server = await device.gatt.connect();
     log('GATT Connected. Discovering Primary Service...', 'info');
 
-    const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+    let service;
+    try {
+      service = await server.getPrimaryService(BLE_SERVICE_UUID);
+    } catch (e) {
+      log('128-bit service UUID not found, trying 16-bit short UUID...', 'warning');
+      try {
+        service = await server.getPrimaryService('ffe0');
+      } catch (e2) {
+        log('16-bit service UUID not found, retrieving all services...', 'warning');
+        const services = await server.getPrimaryServices();
+        log(`Discovered ${services.length} services:`, 'info');
+        for (const s of services) {
+          log(`- Service: ${s.uuid}`, 'info');
+          if (s.uuid.includes('ffe0') || s.uuid.includes('FFE0')) {
+            service = s;
+            break;
+          }
+        }
+        if (!service) throw new Error('Jikong BLE Service (ffe0) not found on this device.');
+      }
+    }
     log('Service retrieved. Discovering Characteristics...', 'info');
 
-    const characteristics = await service.getCharacteristics();
+    let characteristics;
+    try {
+      characteristics = await service.getCharacteristics();
+    } catch (e) {
+      log('Failed to get all characteristics via list, searching BLE_CHAR_UUID directly...', 'warning');
+      const char = await service.getCharacteristic(BLE_CHAR_UUID);
+      characteristics = [char];
+    }
+
     let writeChar = null;
     let notifyChar = null;
 
     for (const char of characteristics) {
-      if (char.uuid === BLE_CHAR_UUID) {
+      const props = [];
+      if (char.properties.write) props.push('write');
+      if (char.properties.writeWithoutResponse) props.push('writeWithoutResponse');
+      if (char.properties.notify) props.push('notify');
+      if (char.properties.indicate) props.push('indicate');
+      log(`Characteristic: ${char.uuid} (Props: ${props.join(', ')})`, 'info');
+
+      if (char.uuid.includes('ffe1') || char.uuid.includes('FFE1')) {
         if (char.properties.write || char.properties.writeWithoutResponse) {
           writeChar = char;
         }
@@ -377,7 +413,13 @@ async function connectBle() {
 
     // Fallback if distinct properties not declared separate by the firmware
     if (!writeChar && !notifyChar) {
-      const mainChar = await service.getCharacteristic(BLE_CHAR_UUID);
+      log('Distinct write/notify characteristics not found, trying BLE_CHAR_UUID fallback...', 'warning');
+      let mainChar;
+      try {
+        mainChar = await service.getCharacteristic(BLE_CHAR_UUID);
+      } catch (err) {
+        mainChar = await service.getCharacteristic('ffe1');
+      }
       writeChar = mainChar;
       notifyChar = mainChar;
     } else {
