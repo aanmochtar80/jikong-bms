@@ -8,7 +8,7 @@ const state = {
   connected: false,
   connectionType: null, // 'ble' or 'serial'
   device: null, // BluetoothDevice or SerialPort
-  bleWriteChar: null, // For sending commands
+  bleWriteChars: [], // For sending commands
   bleNotifyChars: [], // For receiving telemetry notifications
   blePollInterval: null, // Periodic polling timer
   serialReader: null,
@@ -391,7 +391,7 @@ async function connectBle() {
       characteristics = [char];
     }
 
-    let writeChar = null;
+    const writeChars = [];
     const notifyChars = [];
 
     for (const char of characteristics) {
@@ -403,10 +403,10 @@ async function connectBle() {
       log(`Characteristic: ${char.uuid} (Props: ${props.join(', ')})`, 'info');
 
       const uuid = char.uuid.toLowerCase();
-      // FFE1 is for writing commands
-      if (uuid.includes('ffe1')) {
-        if (char.properties.write || char.properties.writeWithoutResponse) {
-          writeChar = char;
+      // Collect write channels
+      if (char.properties.write || char.properties.writeWithoutResponse) {
+        if (uuid.includes('ffe1') || uuid.includes('ffe2') || uuid.includes('ffe3') || uuid.includes('ff10')) {
+          writeChars.push(char);
         }
       }
       // Collect notify channels
@@ -415,21 +415,20 @@ async function connectBle() {
       }
     }
 
-    if (!writeChar) {
-      log('FFE1 write channel not found in list, trying fallbacks...', 'warning');
+    if (writeChars.length === 0) {
+      log('No filtered write channels found, trying fallback...', 'warning');
       for (const char of characteristics) {
         if (char.properties.write || char.properties.writeWithoutResponse) {
-          writeChar = char;
-          break;
+          writeChars.push(char);
         }
       }
     }
 
-    if (!writeChar) {
+    if (writeChars.length === 0) {
       throw new Error('No writable BLE characteristic found.');
     }
 
-    state.bleWriteChar = writeChar;
+    state.bleWriteChars = writeChars;
     state.bleNotifyChars = notifyChars;
 
     log(`Subscribing to notifications on ${notifyChars.length} characteristics...`, 'info');
@@ -451,7 +450,7 @@ async function connectBle() {
     // Start continuous polling loop every 500ms (cycling through known protocols)
     let pollStep = 0;
     state.blePollInterval = setInterval(async () => {
-      if (!state.connected || !state.bleWriteChar) {
+      if (!state.connected || state.bleWriteChars.length === 0) {
         clearInterval(state.blePollInterval);
         state.blePollInterval = null;
         return;
@@ -507,12 +506,21 @@ async function connectBle() {
           break;
       }
 
-      try {
-        const hexCmd = Array.from(frame).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-        log(`TX [${label}]: ${hexCmd.slice(0, 30)}${hexCmd.length > 30 ? '...' : ''}`, 'info');
-        await state.bleWriteChar.writeValueWithoutResponse(frame);
-      } catch (err) {
-        log(`TX Error: ${err.message}`, 'error');
+      // Write to ALL collected write characteristics (matching VoltRide's write sequence)
+      for (const char of state.bleWriteChars) {
+        try {
+          const hexCmd = Array.from(frame).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+          const shortUuid = char.uuid.slice(-4).toUpperCase();
+          log(`TX [${label}] to ${shortUuid}: ${hexCmd.slice(0, 20)}...`, 'info');
+          
+          if (char.properties.writeWithoutResponse) {
+            await char.writeValueWithoutResponse(frame);
+          } else {
+            await char.writeValueWithResponse(frame);
+          }
+        } catch (err) {
+          log(`TX Error on ${char.uuid.slice(-4).toUpperCase()}: ${err.message}`, 'error');
+        }
       }
 
       pollStep++;
@@ -1170,7 +1178,7 @@ function disconnect() {
   state.connected = false;
   state.connectionType = null;
   state.device = null;
-  state.bleWriteChar = null;
+  state.bleWriteChars = [];
   state.bleNotifyChars = [];
   state.serialReader = null;
   state.serialPollInterval = null;
